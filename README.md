@@ -29,7 +29,7 @@ flowchart LR
         TASK["Named ACR Task<br/>System-assigned managed identity"]
         ACR["Azure Container Registry<br/>Premium"]
         IMAGE["Built image<br/>repository@sha256:digest"]
-        TASK -->|"Build and push<br/>AcrPush / Repository Writer"| ACR
+        TASK -->|"Build and push<br/>AcrPush"| ACR
         ACR --- IMAGE
     end
 
@@ -56,7 +56,7 @@ flowchart LR
     DNS --> ACRPE
     ACRPE -->|"3. Pull image over Private Link"| ACR
     RUNTIME --> FOUNDRYPE
-    PROJECT -. "2. AcrPull / Repository Reader" .-> ACR
+    PROJECT -. "2. AcrPull" .-> ACR
 ```
 
 ## Identities and permissions
@@ -66,26 +66,17 @@ There are three different actors. Do not use one broad role for all of them.
 | Actor | Purpose | ACR role |
 |---|---|---|
 | Developer | Upload local source, create or run ACR Tasks, read build logs | `Container Registry Tasks Contributor` |
-| ACR Task system-assigned managed identity | Pull base images when required and push the built image | `AcrPush` or `Container Registry Repository Writer` |
-| Foundry project managed identity | Pull the completed image | `AcrPull` or `Container Registry Repository Reader` |
+| ACR Task system-assigned managed identity | Pull base images when required and push the built image | `AcrPush` |
+| Foundry project managed identity | Pull the completed image | `AcrPull` |
 
-### Role selection
-
-| ACR permission mode | Task build output role | Foundry pull role |
-|---|---|---|
-| RBAC Registry Permissions | `AcrPush` | `AcrPull` |
-| RBAC Registry + ABAC Repository Permissions | `Container Registry Repository Writer` | `Container Registry Repository Reader` |
-
-For ABAC mode, add repository conditions when access should be limited to a
-specific repository.
+This guide follows the verified **RBAC Registry Permissions** mode.
 
 The task identity needs **push/write**, not only pull/read, because it must
 store the newly built image in ACR. The Foundry identity only needs
 **pull/read**.
 
 If the Dockerfile uses a base image from a different private registry, also
-grant the task identity `AcrPull` or `Container Registry Repository Reader` on
-that source registry.
+grant the task identity `AcrPull` on that source registry.
 
 ## Network paths
 
@@ -183,8 +174,8 @@ In **Azure portal**:
 1. Create an Azure Container Registry in East Asia.
 2. Select the **Premium** SKU.
 3. Keep **Admin user** disabled.
-4. Under **Settings > Properties**, record the role-assignment permission
-   mode.
+4. Under **Settings > Properties**, confirm **Role assignment permissions
+   mode** is **RBAC Registry Permissions**.
 5. Under **Settings > Networking**, allow trusted Microsoft services.
 6. Do not add a Southeast Asia geo-replica if the objective is to demonstrate
    a cross-region pull from the East Asia registry.
@@ -333,8 +324,6 @@ $acrId = az acr show `
   --output tsv
 ```
 
-For an ACR using **RBAC Registry Permissions**:
-
 ```powershell
 az role assignment create `
   --assignee-object-id $taskPrincipalId `
@@ -342,18 +331,6 @@ az role assignment create `
   --role AcrPush `
   --scope $acrId
 ```
-
-For an ACR using **RBAC Registry + ABAC Repository Permissions**:
-
-```powershell
-az role assignment create `
-  --assignee-object-id $taskPrincipalId `
-  --assignee-principal-type ServicePrincipal `
-  --role 'Container Registry Repository Writer' `
-  --scope $acrId
-```
-
-Add an ABAC repository condition if required by customer policy.
 
 Configure the task to use its system identity for the ACR credential:
 
@@ -367,8 +344,8 @@ az acr task credential add `
   --use-identity '[system]'
 ```
 
-If the Dockerfile pulls a private base image from an ABAC-enabled ACR, configure
-the task source-registry identity as well:
+If the Dockerfile pulls a private base image from ACR, configure the task
+source-registry identity as well:
 
 ```powershell
 az acr task update `
@@ -474,15 +451,11 @@ Use this digest-pinned value for the Foundry deployment.
 From **ACR > Access control (IAM)**:
 
 1. Select **Add role assignment**.
-2. Choose:
-   - `AcrPull` for RBAC Registry Permissions; or
-   - `Container Registry Repository Reader` for RBAC + ABAC Repository
-     Permissions.
+2. Choose `AcrPull`.
 3. Select **Managed identity**.
 4. Select the Foundry project managed identity.
 5. Assign the role at ACR scope.
-6. For ABAC mode, add a condition for the image repository if required.
-7. Allow time for role propagation.
+6. Allow time for role propagation.
 
 The Foundry identity does not need `AcrPush`, `Contributor`, or `Owner`.
 
@@ -544,7 +517,7 @@ Confirm:
 - Build logs show the image push.
 - ACR contains the run-specific tag and `latest`.
 - The task uses a system-assigned managed identity.
-- The task identity has `AcrPush` or Repository Writer.
+- The task identity has `AcrPush`.
 
 Useful commands:
 
@@ -589,11 +562,11 @@ Check failures according to the stage where they occur.
 | Task registry login | 401 or 403 | Task credential uses `[system]`; role assignment has propagated |
 | Task network access | 403 with network policy | Trusted services and `networkRuleBypassAllowedForTasks=true` |
 | Base image pull | Unauthorized | Task identity has reader/pull role on the base-image registry |
-| Built image push | Unauthorized | Task identity has `AcrPush` or Repository Writer |
+| Built image push | Unauthorized | Task identity has `AcrPush` |
 | Image lookup | Tag or digest not found | Task output repository and task run logs |
 | Foundry DNS | ACR resolves publicly or not at all | Private DNS records, VNet link, and custom DNS forwarding |
 | Foundry network | Timeout | Private Endpoint approval, NSG, UDR, firewall, and TCP 443 |
-| Foundry image pull | 401 or 403 | Foundry project identity and `AcrPull`/Repository Reader |
+| Foundry image pull | 401 or 403 | Foundry project identity has `AcrPull` |
 | Foundry starts old image | Unexpected image content | Use `repository@sha256:digest`, not only `:latest` |
 
 ## Microsoft references
@@ -604,7 +577,6 @@ Check failures according to the stage where they occur.
 - [Container Registry Tasks Contributor role](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/containers#container-registry-tasks-contributor)
 - [Connect privately to an Azure container registry](https://learn.microsoft.com/azure/container-registry/container-registry-private-endpoints)
 - [Azure Container Registry roles and permissions](https://learn.microsoft.com/azure/container-registry/container-registry-roles)
-- [ACR RBAC and ABAC repository permissions](https://learn.microsoft.com/azure/container-registry/container-registry-rbac-abac-repository-permissions)
 - [Configure private networking for Foundry Agent Service](https://learn.microsoft.com/azure/foundry/agents/how-to/virtual-networks)
 - [Hosted agent permissions reference](https://learn.microsoft.com/azure/foundry/agents/concepts/hosted-agent-permissions)
 - [Deploy a hosted agent with a private Azure Container Registry](https://learn.microsoft.com/azure/foundry/agents/how-to/deploy-hosted-agent-private-azure-container-registry)

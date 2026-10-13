@@ -223,9 +223,33 @@ az account show --output table
 
 # Detailed implementation guidance
 
+The guide uses Azure Portal for resource, network, identity, and RBAC
+configuration wherever the required control is exposed. Azure CLI remains
+necessary for operations that need to package local files or that don't
+currently have a complete Portal surface:
+
+- Creating a named ACR Task from a local source context.
+- Uploading the current local source context for a task run.
+- Configuring the task to use its system identity as a registry credential.
+- Setting `networkRuleBypassAllowedForTasks`.
+- Automating digest lookup.
+- Deploying the pre-built image with the current `azd` Hosted Agent workflow.
+
 ## Phase 1 - Foundation and private networking
 
 ### Step 1 - Define the resource values
+
+#### Azure Portal
+
+Record the values from these Portal locations:
+
+1. **Subscriptions > \<subscription> > Overview**: subscription ID.
+2. **Resource groups**: existing or planned ACR, network, and Foundry resource
+   groups.
+3. **Microsoft Foundry**: approved account and project names.
+4. **Virtual networks**: approved VNet name and nonoverlapping CIDRs.
+
+#### Azure CLI
 
 The command examples use PowerShell:
 
@@ -252,7 +276,9 @@ Regional design:
 
 ### Step 2 - Create the Southeast Asia network
 
-In **Azure portal > Virtual networks**:
+#### Azure Portal
+
+From **Azure portal > Virtual networks**:
 
 1. Create a VNet in Southeast Asia.
 2. Create a dedicated Foundry agent subnet.
@@ -276,6 +302,8 @@ Review any NSGs, UDRs, Azure Firewall policies, DNS forwarders, and TLS
 inspection before Foundry creation.
 
 ### Step 3 - Create and secure the East Asia ACR
+
+#### Azure Portal
 
 In **Azure portal**:
 
@@ -301,7 +329,10 @@ allowlist that public egress IP. Update the rule if it changes.
 Premium SKU is required for ACR Private Endpoint support.
 
 Foundry hosted agents require the registry's Microsoft Entra authentication as
-ARM policy to be enabled. Check it:
+ARM policy to be enabled. This policy isn't consistently exposed in the Portal,
+so verify it with Azure CLI.
+
+#### Azure CLI
 
 ```powershell
 az acr config authentication-as-arm show `
@@ -317,6 +348,8 @@ az acr config authentication-as-arm update `
 ```
 
 ### Step 4 - Create Foundry with VNet injection
+
+#### Azure Portal
 
 In **Azure portal**, search for **Foundry** and create the account:
 
@@ -339,6 +372,8 @@ The Foundry runtime in this design uses the ACR Private Endpoint even though
 selected public networks remain enabled for the developer workstation.
 
 ### Step 5 - Create the ACR Private Endpoint and DNS
+
+#### Azure Portal
 
 From **ACR > Settings > Networking > Private access**:
 
@@ -374,6 +409,8 @@ If custom DNS servers are used, configure conditional forwarding to Azure DNS.
 
 ### Step 6 - Grant the developer ACR Task permission
 
+#### Azure Portal
+
 From **ACR > Access control (IAM)**:
 
 1. Select **Add role assignment**.
@@ -392,6 +429,20 @@ Treat this as a privileged build role because a user who can author and run
 tasks can execute build instructions.
 
 ### Step 7 - Create the named ACR Task
+
+#### Azure Portal support
+
+The Portal can display named tasks and stored run logs, but it doesn't provide
+the complete authoring workflow used here for packaging and uploading a local
+source directory. Create this task with Azure CLI.
+
+After creation, confirm it appears under:
+
+```text
+ACR > Services > Tasks
+```
+
+#### Azure CLI
 
 Named task creation is performed with Azure CLI in this workflow because the
 CLI packages and uploads the local source context.
@@ -423,6 +474,8 @@ to locate the newest digest; Foundry should use an immutable digest.
 
 ### Step 8 - Grant the task identity `AcrPush`
 
+#### Get the task principal ID
+
 Get the task identity and ACR resource IDs:
 
 ```powershell
@@ -439,7 +492,24 @@ $acrId = az acr show `
   --output tsv
 ```
 
-Assign `AcrPush`:
+#### Azure Portal
+
+After the task principal exists:
+
+1. Open **ACR > Access control (IAM)**.
+2. Select **Add > Add role assignment**.
+3. Select `AcrPush`.
+4. Select **Managed identity**.
+5. Choose the system-assigned identity for the named ACR Task.
+6. Confirm the principal/object ID matches `$taskPrincipalId`.
+7. Assign the role at this ACR scope.
+
+If the Portal identity picker doesn't expose the task identity, use the
+object-ID-based Azure CLI assignment below.
+
+#### Azure CLI alternative
+
+Assign `AcrPush` by object ID:
 
 ```powershell
 az role assignment create `
@@ -449,7 +519,10 @@ az role assignment create `
   --scope $acrId
 ```
 
-Configure the task to use its system identity for the registry credential:
+#### Configure the task registry credential
+
+The complete task credential control isn't exposed consistently in the Portal.
+Configure the task to use its system identity with Azure CLI:
 
 ```powershell
 $acrLoginServer = "$acrName.azurecr.io"
@@ -471,8 +544,20 @@ This design uses Microsoft-managed ACR Task compute. Its connection to ACR
 uses the public service endpoint with an identity-aware trusted-service bypass;
 it does not traverse the ACR Private Endpoint.
 
-The trusted-services checkbox was enabled in step 3. Now explicitly enable the
-task bypass policy:
+#### Azure Portal
+
+Confirm the Portal portion configured in step 3:
+
+1. Open **ACR > Settings > Networking > Public access**.
+2. Confirm **Selected networks** is selected.
+3. Under **Firewall exception**, confirm **Allow trusted Microsoft services to
+   access this container registry** is enabled.
+4. Save.
+
+#### Azure CLI required
+
+`networkRuleBypassAllowedForTasks` isn't currently exposed as a complete Portal
+control. Explicitly enable it with Azure CLI:
 
 ```powershell
 az resource update `
@@ -510,6 +595,8 @@ Private Endpoint.
 
 ### Step 10 - Upload the current source and run the build
 
+#### Azure CLI required
+
 Each time the developer wants to build the current local source:
 
 ```powershell
@@ -536,9 +623,38 @@ Expected sequence:
 7. The task uses `AcrPush` to write the image.
 8. A run-specific tag and `latest` tag are created.
 
+#### Azure Portal verification
+
+After the CLI queues the run:
+
+1. Open **ACR > Services > Tasks > Runs**.
+2. Select the latest **Run ID**.
+3. Confirm the task name, trigger, start time, duration, and `Succeeded`
+   status.
+4. Review the stored build log and confirm the image push completed.
+
+The Portal can inspect stored runs and logs, but the local source directory must
+still be packaged and uploaded by Azure CLI.
+
 ## Phase 3 - Configure the Foundry image pull
 
 ### Step 11 - Resolve the immutable image digest
+
+#### Azure Portal
+
+To copy the digest manually:
+
+1. Open **ACR > Services > Repositories**.
+2. Select the configured image repository.
+3. Select the `latest` tag produced by the successful task run.
+4. Copy the manifest digest beginning with `sha256:`.
+5. Construct the immutable reference:
+
+   ```text
+   <acr-name>.azurecr.io/<repository>@sha256:<digest>
+   ```
+
+#### Azure CLI
 
 After a successful build:
 
@@ -561,6 +677,8 @@ Expected format:
 
 ### Step 12 - Grant the Foundry project `AcrPull`
 
+#### Azure Portal
+
 From **ACR > Access control (IAM)**:
 
 1. Select **Add role assignment**.
@@ -573,6 +691,8 @@ From **ACR > Access control (IAM)**:
 The Foundry identity does not need `AcrPush`, `Contributor`, or `Owner`.
 
 ### Step 13 - Create the Foundry ACR connection
+
+#### Microsoft Foundry Portal
 
 In the Foundry project:
 
@@ -594,15 +714,110 @@ Configure the customer-owned hosted-agent version with:
 <acr-name>.azurecr.io/<repository>@sha256:<digest>
 ```
 
-Start or update the hosted-agent version.
+Both tags and SHA-256 digests are accepted by the Foundry hosted-agent
+deployment workflow. A digest is not mandatory, but it is strongly recommended
+because it identifies one immutable image manifest. A mutable tag such as
+`:latest` can point to different content after another build.
+
+#### Minimal `azure.yaml` example
+
+The following example shows the shape of a hosted-agent service that consumes
+the pre-built image. Replace the names and digest with the values from this
+environment:
+
+```yaml
+name: acr-crossregion-hosted-agent
+
+services:
+  crossregion-agent:
+    host: azure.ai.agent
+    project: src/crossregion-agent
+    kind: hosted
+    name: crossregion-agent
+    image: myregistry.azurecr.io/foundry/hosted-agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    protocols:
+      - protocol: responses
+        version: "2.0.0"
+```
+
+The important field is:
+
+```yaml
+image: <acr-name>.azurecr.io/<repository>@sha256:<digest>
+```
+
+The `project` path is the local hosted-agent project folder used by the
+deployment tooling. The image itself is not rebuilt when the pre-built image
+workflow is selected.
+
+#### Initialize from a pre-built image
+
+For a new hosted-agent project, the same immutable image can be supplied during
+initialization:
+
+```powershell
+$agentName = 'crossregion-agent'
+
+azd ai agent init `
+  --image $immutableImage `
+  --agent-name $agentName
+```
+
+This workflow skips Dockerfile generation, local image build, and ACR
+provisioning for the agent project.
+
+#### Deploy
+
+After the Foundry project endpoint and other required agent settings have been
+configured in the `azd` environment:
+
+```powershell
+azd auth login
+azd deploy
+```
+
+If the project also owns infrastructure that still needs to be provisioned,
+use:
+
+```powershell
+azd up
+```
+
+Each new ACR Task build produces a new digest. To release that build:
+
+1. Resolve the new digest in step 11.
+2. Replace the `image` value in `azure.yaml`.
+3. Run `azd deploy` again.
+4. Confirm the new hosted-agent version references the expected digest.
+
+> [!NOTE]
+> Current Foundry deployment tooling can create a per-agent identity and grant
+> it `AcrPull` during deployment. This guide follows the customer-verified
+> project managed identity assignment. After deployment, confirm the effective
+> pull principal shown for the hosted agent and ensure that principal has
+> `AcrPull` on the ACR.
+
+#### Microsoft Foundry Portal verification
+
+After `azd deploy` completes:
+
+1. Open the target Foundry project.
+2. Open **Hosted agents** or **Agents**, depending on the current Portal label.
+3. Select `crossregion-agent`.
+4. Open the deployed version or revision.
+5. Confirm the provisioning status is successful.
+6. Confirm the image reference uses the expected ACR repository and digest.
+7. Record the effective agent identity and verify that it has `AcrPull`.
 
 At runtime:
 
-1. Foundry uses the project managed identity.
+1. Foundry uses the effective image-pull identity: the project managed
+   identity in the verified setup, or the per-agent identity when managed by
+   the current `azd` workflow.
 2. The injected runtime resolves ACR names through Private DNS.
 3. DNS returns the ACR Private Endpoint IPs.
 4. The runtime reaches ACR through Azure Private Link.
-5. ACR checks the project's `AcrPull` assignment.
+5. ACR checks that the effective pull identity has `AcrPull`.
 6. The image manifest and layers are downloaded from East Asia.
 
 ## Phase 4 - End-to-end verification

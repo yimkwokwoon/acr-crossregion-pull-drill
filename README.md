@@ -240,8 +240,10 @@ In **Azure portal**, search for **Foundry** and create the account:
 > Foundry network injection must be configured during account creation. It
 > cannot currently be added later for hosted agents.
 
-For an ACR with public network access disabled, use a Foundry project created
-after **June 25, 2026**. Earlier projects require the ACR public endpoint.
+The Foundry runtime in this design uses the ACR Private Endpoint even though
+selected public networks remain enabled for the developer workstation. Use a
+Foundry project created after **June 25, 2026** for the supported private ACR
+path.
 
 ### 6. Create the ACR Private Endpoint
 
@@ -473,19 +475,28 @@ In the Foundry project:
 The connection identifies the registry. It does not create the ACR Private
 Endpoint, Private DNS records, or ACR role assignment.
 
-### 15. Disable ACR public network access
+### 15. Restrict ACR public access to selected networks
 
 After the build path and private pull path have been configured:
 
 1. Open **ACR > Settings > Networking > Public access**.
-2. Set public network access to **Disabled**.
-3. Save.
-4. Confirm the approved Private Endpoint remains available.
-5. Confirm trusted Microsoft services and the ACR Task bypass policy match the
+2. Select **Selected networks**.
+3. Under **Firewall**, add the public outbound IPv4 address of the approved
+   developer workstation or the corporate egress CIDR.
+4. Prefer a `/32` rule for a single fixed public IP.
+5. Save and allow a few minutes for the firewall rule to take effect.
+6. Confirm the approved Private Endpoint remains available.
+7. Confirm trusted Microsoft services and the ACR Task bypass policy match the
    selected build design.
 
-Repository browsing from a workstation outside the VNet might stop working.
-This is expected.
+For a normal workstation, enter its **public outbound IPv4 address**, not a
+private LAN address such as `10.x.x.x` or `192.168.x.x`. If the workstation
+uses corporate NAT, a proxy, or a VPN with internet breakout, allowlist the
+public egress IP seen by Azure. Update the rule if that public IP changes.
+
+This configuration keeps portal, CLI, and source-upload access available from
+the approved developer network. The Foundry runtime still resolves ACR to the
+Private Endpoint and pulls the image through Azure Private Link.
 
 ### 16. Configure Foundry to use the built image
 
@@ -543,7 +554,7 @@ az acr repository show-tags `
 
 Confirm:
 
-- ACR public network access remains disabled.
+- ACR public access is limited to the approved developer public IP or CIDR.
 - The ACR Private Endpoint is approved.
 - ACR names resolve to private IP addresses from the Foundry network.
 - The Foundry project identity has only pull/read permission.
